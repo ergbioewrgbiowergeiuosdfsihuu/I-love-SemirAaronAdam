@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Workspace Dashboard</title>
+    <style>
+        :root {
+            --base: #0f111a; --panel: #1a1c23; --panel-hl: #262933;
+            --accent: #10b981; --accent-hl: #34d399;
+            --font-main: #f8fafc; --font-sub: #94a3b8; --line: #2d313f;
+        }
+        body { margin: 0; font-family: 'Inter', system-ui, sans-serif; display: flex; flex-direction: column; height: 100vh; background-color: var(--base); color: var(--font-main); overflow: hidden; }
+        
+        #workspace-header { display: flex; background-color: #07080c; padding: 8px 8px 0 8px; border-bottom: 1px solid var(--line); }
+        .panel-tab { background-color: var(--panel); color: var(--font-sub); padding: 10px 20px; margin-right: 6px; border-radius: 8px 8px 0 0; cursor: pointer; display: flex; align-items: center; justify-content: space-between; font-size: 13px; min-width: 140px; border: 1px solid transparent; border-bottom: none; user-select: none; }
+        .panel-tab:hover { background-color: var(--panel-hl); }
+        .panel-tab.active { background-color: var(--base); color: var(--font-main); font-weight: 500; border-color: var(--line); }
+        .panel-close { margin-left: 10px; background: none; border: none; color: var(--font-sub); cursor: pointer; font-size: 14px; }
+        .panel-close:hover { color: #ef4444; }
+        #add-panel-btn { background: none; border: none; color: var(--font-sub); font-size: 20px; cursor: pointer; padding: 0 16px; transition: 0.2s; }
+        #add-panel-btn:hover { color: var(--font-main); }
+
+        #control-bar { display: flex; align-items: center; background-color: var(--base); padding: 12px 16px; border-bottom: 1px solid var(--line); gap: 12px; }
+        #query-input { flex-grow: 1; background-color: var(--panel); border: 1px solid var(--line); color: var(--font-main); padding: 10px 16px; border-radius: 6px; font-size: 14px; outline: none; }
+        #query-input:focus { border-color: var(--accent); }
+        
+        #viewport-container { flex-grow: 1; position: relative; background: #ffffff; }
+        
+        /* Views */
+        .scramjet-frame { width: 100%; height: 100%; border: none; position: absolute; top: 0; left: 0; display: none; background-color: #fff; }
+        .scramjet-frame.active { display: block; }
+
+        /* Internal semir:// Pages */
+        .internal-view { width: 100%; height: 100%; position: absolute; top: 0; left: 0; display: none; background-color: var(--panel); color: var(--font-main); padding: 40px; box-sizing: border-box; overflow-y: auto; }
+        .internal-view.active { display: block; }
+        .internal-view h2 { color: var(--accent); margin-top: 0; border-bottom: 1px solid var(--line); padding-bottom: 10px; }
+        .internal-view ul { list-style: none; padding: 0; }
+        .internal-view li { background: var(--base); margin-bottom: 8px; padding: 12px; border-radius: 6px; border: 1px solid var(--line); }
+        .internal-view a { color: var(--font-main); text-decoration: none; cursor: pointer; display: block;}
+        .internal-view a:hover { color: var(--accent); }
+        
+        #loading-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: var(--base); display: flex; align-items: center; justify-content: center; z-index: 1000; font-size: 14px; color: var(--font-sub); }
+    </style>
+    
+    <script src="/lib/scramjet.all.js"></script>
+</head>
+<body>
+
+    <div id="loading-overlay">Booting Scramjet Engine...</div>
+
+    <div id="workspace-header"><button id="add-panel-btn">+</button></div>
+    <div id="control-bar">
+        <input type="text" id="query-input" placeholder="Initialize data query (URL or search term)...">
+    </div>
+    
+    <div id="viewport-container"></div>
+
+    <script>
+        const state = {
+            panelCount: 0,
+            activeId: null,
+            panels: {}
+        };
+
+        async function bootSystem() {
+            if (!('serviceWorker' in navigator)) {
+                alert("Runtime not supported by this browser.");
+                return;
+            }
+
+            try {
+                await navigator.serviceWorker.register('/lib/worker.js', { scope: '/' });
+                await navigator.serviceWorker.ready;
+
+                const { ScramjetController } = $scramjetLoadController();
+                window.scramjet = new ScramjetController({
+                    prefix: '/sys/data/', 
+                    files: {
+                        wasm: '/lib/scramjet.wasm.wasm',
+                        all: '/lib/scramjet.all.js',
+                        sync: '/lib/scramjet.sync.js'
+                    },
+                    flags: { strictRewrites: true, captureErrors: true }
+                });
+
+                await window.scramjet.init();
+                
+                document.getElementById('loading-overlay').style.display = 'none';
+                initPanel();
+
+            } catch (err) {
+                console.error('Engine Boot Failure:', err);
+                document.getElementById('loading-overlay').innerText = 'System Fault: Check Console';
+            }
+        }
+
+        // --- Internal Page Renderer ---
+        function renderInternalPage(page, containerElement) {
+            containerElement.innerHTML = `<h2>semir://${page}</h2>`;
+            
+            if (page === 'bookmarks') {
+                const bookmarks = JSON.parse(localStorage.getItem('semir_bookmarks') || '[]');
+                if (bookmarks.length === 0) {
+                    containerElement.innerHTML += `<p>No bookmarks found. Double-click a tab to save the current page!</p>`;
+                } else {
+                    let ul = document.createElement('ul');
+                    bookmarks.forEach((bm, index) => {
+                        let li = document.createElement('li');
+                        li.innerHTML = `<a onclick="processQuery('${bm}')">${bm}</a>`;
+                        ul.appendChild(li);
+                    });
+                    containerElement.appendChild(ul);
+                }
+            } else if (page === 'passwords') {
+                containerElement.innerHTML += `<p style="color: #ef4444;">System Warning: Password Autofill module is not yet installed.</p><p>You will need to write custom DOM-injection scripts to capture and fill credentials on proxied pages.</p>`;
+            } else if (page === 'jsfunctions') {
+                containerElement.innerHTML += `<p>Custom JavaScript Injector Database. (Not implemented yet).</p>`;
+            } else {
+                containerElement.innerHTML += `<p>Error: Internal protocol route not found.</p>`;
+            }
+        }
+
+        // --- Tab Creation with Double-Click Listener ---
+        function initPanel(query = '') {
+            state.panelCount++;
+            const pId = 'pnl-' + state.panelCount;
+            state.panels[pId] = { target: '' };
+            
+            // Create Tab
+            const tab = document.createElement('div');
+            tab.className = 'panel-tab';
+            tab.id = 'tab-' + pId;
+            tab.innerHTML = `<span class="panel-label">Query Window</span> <button class="panel-close" onclick="closePanel('${pId}', event)">✕</button>`;
+            
+            // Single click focuses the panel
+            tab.onclick = () => focusPanel(pId);
+            
+            // Double click bookmarks the panel
+            tab.ondblclick = () => {
+                const currentUrl = state.panels[pId].target;
+                if (!currentUrl || currentUrl.startsWith('semir://')) return; // Don't bookmark internal pages
+                
+                let bookmarks = JSON.parse(localStorage.getItem('semir_bookmarks') || '[]');
+                if (!bookmarks.includes(currentUrl)) {
+                    bookmarks.push(currentUrl);
+                    localStorage.setItem('semir_bookmarks', JSON.stringify(bookmarks));
+                    alert(`Bookmarked: ${currentUrl}`);
+                } else {
+                    alert(`Already bookmarked!`);
+                }
+            };
+            
+            document.getElementById('add-panel-btn').before(tab);
+
+            // Create Scramjet Frame
+            const frame = window.scramjet.createFrame();
+            frame.classList.add('scramjet-frame');
+            frame.id = 'frame-' + pId;
+            document.getElementById('viewport-container').appendChild(frame);
+
+            // Create Internal View container (For semir:// pages)
+            const internalView = document.createElement('div');
+            internalView.classList.add('internal-view');
+            internalView.id = 'internal-' + pId;
+            document.getElementById('viewport-container').appendChild(internalView);
+
+            focusPanel(pId);
+            if (query) processQuery(query);
+        }
+
+        // --- Focus Panel logic ---
+        function focusPanel(pId) {
+            document.querySelectorAll('.panel-tab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.scramjet-frame').forEach(f => f.classList.remove('active'));
+            document.querySelectorAll('.internal-view').forEach(i => i.classList.remove('active'));
+
+            document.getElementById('tab-' + pId).classList.add('active');
+            
+            const target = state.panels[pId].target;
+            if (target && target.startsWith('semir://')) {
+                document.getElementById('internal-' + pId).classList.add('active');
+            } else {
+                document.getElementById('frame-' + pId).classList.add('active');
+            }
+            
+            state.activeId = pId;
+            document.getElementById('query-input').value = target;
+        }
+
+        function closePanel(pId, event) {
+            event.stopPropagation();
+            document.getElementById('tab-' + pId).remove();
+            document.getElementById('frame-' + pId).remove();
+            document.getElementById('internal-' + pId).remove();
+            delete state.panels[pId];
+            
+            if (state.activeId === pId) {
+                const remaining = document.querySelectorAll('.panel-tab');
+                if (remaining.length > 0) {
+                    focusPanel(remaining[remaining.length - 1].id.replace('tab-', ''));
+                } else {
+                    state.activeId = null;
+                    document.getElementById('query-input').value = '';
+                    initPanel(); 
+                }
+            }
+        }
+
+        // --- Process Query ---
+        function processQuery(input) {
+            if (!state.activeId) initPanel();
+            
+            let query = input.trim();
+            state.panels[state.activeId].target = query;
+            document.getElementById('query-input').value = query;
+
+            // 1. Check for Internal Protocol
+            if (query.startsWith('semir://')) {
+                const route = query.replace('semir://', '');
+                document.getElementById('tab-' + state.activeId).querySelector('.panel-label').innerText = route.toUpperCase();
+                
+                document.getElementById('frame-' + state.activeId).classList.remove('active');
+                const internalView = document.getElementById('internal-' + state.activeId);
+                internalView.classList.add('active');
+                
+                renderInternalPage(route, internalView);
+                document.getElementById('query-input').blur();
+                return;
+            }
+
+            // 2. Normal Web Processing
+            document.getElementById('internal-' + state.activeId).classList.remove('active');
+            document.getElementById('frame-' + state.activeId).classList.add('active');
+
+            if (query.includes(' ') || (!query.includes('.') && !query.startsWith('http'))) {
+                query = 'https://duckduckgo.com/html/?q=' + encodeURIComponent(query);
+            } else if (!query.startsWith('http://') && !query.startsWith('https://')) {
+                query = 'https://' + query;
+            }
+            
+            document.getElementById('tab-' + state.activeId).querySelector('.panel-label').innerText = query.split('/')[2] || "Active Query";
+            
+            // Route through backend logic node
+            const logicServerUrl = window.location.origin + '/process?url=' + encodeURIComponent(query);
+            
+            const frame = document.getElementById('frame-' + state.activeId);
+            frame.src = window.scramjet.prefix + btoa(logicServerUrl);
+            
+            document.getElementById('query-input').blur();
+        }
+
+        document.getElementById('query-input').addEventListener('keypress', e => {
+            if (e.key === 'Enter') processQuery(e.target.value);
+        });
+        document.getElementById('add-panel-btn').addEventListener('click', () => initPanel());
+
+        bootSystem();
+    </script>
+</body>
+</html>
